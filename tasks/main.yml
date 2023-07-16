@@ -1,0 +1,77 @@
+---
+- name: Recieve full chain crt content
+  ansible.builtin.slurp:
+    src: "{{ path_to_fullchain_crt }}"
+  register: crt_content
+  delegate_to: localhost
+
+- name: Recieve key content
+  ansible.builtin.slurp:
+    src: "{{ path_to_key }}"
+  register: pkey_content_b64
+  delegate_to: localhost
+
+- name: Find and separate blocks in certificate and key
+  ansible.builtin.set_fact:
+    separated_blocks: "{{ crt_content.content | b64decode | regex_findall('(?ms)-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----') }}"
+    pkey_content: "{{ pkey_content_b64.content | b64decode | regex_findall('(?ms)-----BEGIN RSA PRIVATE KEY-----.+?-----END RSA PRIVATE KEY-----') }}"
+
+- name: Prepare CA and DOMAIN blocks
+  ansible.builtin.set_fact:
+    block_1_ca: "{{ ''.join((separated_blocks[1], '\n', separated_blocks[2])) }}"
+    block_2_full_chain: "{{ ''.join((separated_blocks[0], '\n', separated_blocks[1], '\n', separated_blocks[2])) }}"
+    block_3_pkey: "{{ pkey_content[0] }}"
+
+- name: Create commercial_ca.crt
+  become: true
+  ansible.builtin.copy:
+    content: "{{ block_1_ca }}"
+    dest: "{{ dst_folder }}commercial_ca.crt"
+    owner: zimbra
+    group: zimbra
+    mode: 0640
+
+- name: Create full chain crt
+  become: true
+  ansible.builtin.copy:
+    content: "{{ block_2_full_chain }}"
+    dest: "{{ dst_folder }}commercial.crt"
+    owner: zimbra
+    group: zimbra
+    mode: 0640
+
+- name: Create commercial.key
+  become: true
+  ansible.builtin.copy:
+    content: "{{ block_3_pkey }}"
+    dest: "{{ dst_folder }}commercial.key"
+    owner: zimbra
+    group: zimbra
+    mode: 0640
+
+- name: Verify ssl sertifictes 
+  become: true
+  ansible.builtin.command: "su - zimbra /bin/bash -c '/opt/zimbra/bin/zmcertmgr verifycrt comm {{ dst_folder }}commercial.key {{ dst_folder }}commercial.crt {{ dst_folder }}commercial_ca.crt'"
+  changed_when: false
+
+- name: Deploy ssl sertifictes
+  become: true
+  ansible.builtin.command: "su - zimbra /bin/bash -c '/opt/zimbra/bin/zmcertmgr deploycrt comm {{ dst_folder }}commercial.crt {{ dst_folder }}commercial_ca.crt'"
+  changed_when: false
+
+- name: Get new ssl sertifictes info
+  become: true
+  ansible.builtin.command: "su - zimbra /bin/bash -c '/opt/zimbra/bin/zmcertmgr viewdeployedcrt'"
+  register: ZIMBRA_CRT
+  changed_when: false
+
+- name: Show deployed crt
+  ansible.builtin.debug:
+    msg: "{{ ZIMBRA_CRT }}"
+  changed_when: false
+
+- name: Restart Zimbra
+  become: true
+  ansible.builtin.command: "su - zimbra /bin/bash -c '/opt/zimbra/bin/zmcontrol restart'"
+  timeout: 720
+  changed_when: false
